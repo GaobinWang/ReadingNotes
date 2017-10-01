@@ -1,6 +1,6 @@
-#!/usr/bin/python
-
-
+#!/usr/bin/env python
+# -*- coding:utf-8 -*-
+__author__ = 'Gaobin Wang'
 """
 拙劣的程序员担心代码。好的程序员担心数据结构及他们的关系。 --Linus Torvalds
 
@@ -110,7 +110,6 @@ f
 g = d + e + f  
 g
 
-
 ###字符串
 t = "this is a string object"
 t.capitalize() #将第一个词改为首字母大写
@@ -121,7 +120,6 @@ t.replace(' ','|') #替换
 t.upper() #全部字母变为大写
 t.count('a') #计算子字符串出现的次数
 'http://www.python.org'.strip('http:/') #剥离
-
 
 """
 #正则表达式
@@ -142,7 +140,6 @@ from datetime import datetime
 pydt = datetime.strptime(result[0].replace("'",""),'%m/%d/%Y %H:%M:%S')
 pydt
 type(pydt)
-
 
 ###################
 #Python数据结构
@@ -193,7 +190,6 @@ from functools import reduce
 from functools import reduce 
 reduce(lambda x,y:x + y, range(101))
 ###字典(dict)
-
 
 ###集合(set)
 """
@@ -248,9 +244,3 @@ s['Name']
 s['Height'].mean()
 s[1]
 s[1]['Age']
-
-
-
-
-
-
