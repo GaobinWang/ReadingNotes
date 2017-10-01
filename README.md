@@ -1,21 +1,21 @@
 # ReadingNotes
 读书笔记
 
-#利用Python进行数据分析(Python for Data Analysis)
+# 利用Python进行数据分析(Python for Data Analysis)
 
 ----
 
-##目录(已阅读)
+## 目录(已阅读)
 
 ### Chapter8 绘图与可视化
 ### Chapter9 数据聚合与分组运算
 ### Chapter10 时间序列
 
-#Python金融数据分析(Python for Finance)
+# Python金融数据分析(Python for Finance)
 
 ----
 
-##目录(已阅读)
+## 目录(已阅读)
 
 ### Section1 Python与金融
 * Chapter3 入门示例
