@@ -23,6 +23,9 @@
 ### Section2 金融分析和开发
 * Chapter4 数据类型和结构
 * Chapter5 数据可视化
+* Chapter6 金融时间序列
+* Chapter7 输入\输出操作
+* Chapter8 高性能的PythonO
 * Chapter9 数学工具
 
 ### Section3 衍生品分析库
