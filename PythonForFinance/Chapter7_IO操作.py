@@ -502,6 +502,7 @@ out[0, :10]
 """
 我们简单讲其与numexpr模块在内存中的性能做个比较
 读取数据(Wall time: 1min 54s)
+计算直接无法进行，因为我的电脑内存为4G<6G
 """
 %time imarray = ear.read()
   # read whole array into memory
@@ -512,31 +513,3 @@ expr = '3 * sin(imarray) + sqrt(abs(imarray))'
 ne.set_num_threads(16)
 %time ne.evaluate(expr)[0, :10]
 h5.close()
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
