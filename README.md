@@ -27,6 +27,9 @@
 * Chapter7 输入\输出操作
 * Chapter8 高性能的PythonO
 * Chapter9 数学工具
+* Chapter12 Excel集成
+* Chapter13 面向对象和图形用户界面
+* Chapter14 Web集成
 
 ### Section3 衍生品分析库
 * Chapter18 投资组合估值
