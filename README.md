@@ -1,6 +1,42 @@
 # ReadingNotes
 读书笔记
 
+# Python基础教程(Beginning Python)
+
+----
+
+## 目录
+* Chapter1 快速改造:基础知识 
+* Chapter2 列表和元组
+* Chapter3 使用字符串
+* Chapter4 字典:当索引不好用时 
+* Chapter5 条件、循环和其他语句
+* Chapter6 抽象
+* Chapter7 更加抽象 
+* Chapter8 异常
+* Chapter9 魔法方法、属性和迭代器
+* Chapter10 自带电池 
+* Chapter11 文件和流
+* Chapter12 图形用户界面 
+* Chapter13 数据库支持
+* Chapter14 网络编程(未读) 
+* Chapter15 Python和Web(未读) 
+* Chapter16 测试(未读)
+* Chapter17 扩展Python(未读) 
+* Chapter18 程序打包(未读) 
+* Chapter19 好玩的编程(未读) 
+* Chapter20 项目1：即时标记(未读) 
+* Chapter21 项目2：画幅好画(未读)
+* Chapter22 项目3：万能的XML(未读)
+* Chapter23 项目4：新闻聚合(未读) 
+* Chapter24 项目5：虚拟茶话会(未读) 
+* Chapter25 项目6：使用CGI进行远程编辑(未读) 
+* Chapter26 项目7：自定义电子公告板(未读)
+* Chapter27 项目8：使用XML-RPC进行文件共享(未读) 
+* Chapter28 项目9：文件共享2——GUI版本(未读)
+* Chapter29 项目10：DIY街机游戏(未读)
+
+
 # 利用Python进行数据分析(Python for Data Analysis)
 
 ----
