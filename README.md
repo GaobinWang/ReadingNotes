@@ -18,6 +18,8 @@
 ## 目录(已阅读)
 
 ### Section1 Python与金融
+* Chapter1 为什么将Python用于金融
+* Chapter2 基础构架和工具
 * Chapter3 入门示例
 
 ### Section2 金融分析和开发
@@ -32,7 +34,7 @@
 * Chapter14 Web集成
 
 ### Section3 衍生品分析库
-* Chapter18 投资组合估值
+
 
 
 
