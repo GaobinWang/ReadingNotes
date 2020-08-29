@@ -1,0 +1,1525 @@
+#!/usr/bin/python
+# -*- coding: utf-8 -*-
+"""
+Created on Thu May 24 10:29:53 2018
+
+@author: wanggb
+"""
+#%%
+import pandas as pd
+import numpy as np
+from datetime import datetime
+from datetime import timedelta
+from openpyxl import load_workbook
+import itertools
+from WindPy import w
+import warnings
+warnings.filterwarnings("ignore")
+#%%获取基本参数的函数
+def GetArgs(FileName):
+    """
+    
+    Example
+    ==========
+    FileName = "参数文件.xlsx"
+    data = GetArgs(FileName)
+    """
+    ###设置结果文件的名称
+    ###读取基本参数
+    warnings.filterwarnings("ignore")
+    inputfile = load_workbook(FileName)
+    table1=inputfile[u'基本参数']
+    startdt,enddt,rf,basecode,drawdowndt,anamon,mrate,IsIndexFund=table1.cell(row=1,column=2).value,table1.cell(row=2,column=2).value,table1.cell(row=3,column=2).value,table1.cell(row=4,column=2).value,table1.cell(row=5,column=2).value,table1.cell(row=6,column=2).value,table1.cell(row=7,column=2).value,table1.cell(row=8,column=2).value
+    ###检验参数逻辑性
+    if not isinstance(startdt,datetime):
+        raise ValueError('开始时间输入格式错误')
+    if not isinstance(enddt,datetime):
+        raise ValueError('结束时间输入格式错误')
+    if not isinstance(drawdowndt,datetime):
+        raise ValueError('回撤测算截止时间输入格式错误')
+    #if (enddt.year-startdt.year)*12 + (enddt.month-startdt.month) < 36 - 1:
+    #    raise ValueError('开始结束时间输入错误,考察期不满3年')
+    if enddt < drawdowndt:
+        raise ValueError('回撤测算截止时间输入错误,超出考察日期范围')
+    #if (enddt.year-startdt.year)*12 + (enddt.month-startdt.month) < anamon - 1:
+    #    raise ValueError('正负分析回溯月数输入错误,超出考察日期范围')
+    ###关于考察期
+    SpreadYears = ((enddt.year-startdt.year)*12 + (enddt.month-startdt.month))/12
+    print("考察期共有:",round(SpreadYears,2)," 年")
+    ###关于正负分析回溯月份
+    if ((enddt.year-startdt.year)*12 + (enddt.month-startdt.month))/12 < anamon - 1:
+        print("正负分析回溯月数超出考察期,将其修改为考察期月数")  
+        anamon = (enddt.year-startdt.year)*12 + (enddt.month-startdt.month)
+        print("正负分析回溯月数为",round(anamon,2))
+    ###提取各月最后一个交易日
+    wd = w.tdays("1991-01-01", datetime.now().strftime('%Y-%m-%d'), "Period=M")
+    if wd.ErrorCode==0:
+        mondts=np.array([datetime(dt.year, dt.month, dt.day) for dt in wd.Data[0]])
+    else:
+        raise ValueError("wind月度交易日序列下载出错,错误代码:%s"%wd.ErrorCode)
+    ###将开始日期和截止日期调整为月末
+    startdt=mondts[mondts<=startdt].max()
+    #enddt=mondts[mondts>=datetime(enddt.year,enddt.month,1)].min()
+    ###获取要分析的基金代码列表(直接读取Excel表格)
+    fund_list = pd.read_excel(io = FileName,sheet_name = "基金代码",header = None)
+    fund_list = pd.Series(data = fund_list.iloc[:,0],index = fund_list.index)
+    fund_list=fund_list.dropna()
+    ###获取基准的净值
+    if basecode:
+        wd=w.wsd(basecode,"close",startdt.strftime("%Y-%m-%d"),enddt.strftime("%Y-%m-%d"),"Period=D")
+        if wd.ErrorCode==0:
+            baseval=pd.Series(wd.Data[0],index=wd.Times)
+            wd=w.wss(basecode,"sec_name")
+        else:
+            raise ValueError("wind基准序列下载出错,错误代码:%s"%wd.ErrorCode)
+    else:
+        bv0 = pd.read_excel(io = FileName,sheet_name = "自定义基准",header = None,dtype = {'0': datetime})
+        bv0_date = pd.Series(data = [datetime(i.year, i.month, i.day) for i in bv0.iloc[:,0]])
+        if bv0_date[0]>startdt or bv0_date[len(bv0_date)-1]<enddt:
+            raise ValueError('基准日期输入错误，请输入的基准日期范围至少大于考察日期范围')
+        else:
+            baseval=pd.Series(data = list(bv0.iloc[:,1]),index = bv0.iloc[:,0])
+            baseval = baseval.dropna()     # 删除空行数据
+            basecode="自定义基准"
+            baseval_len=len(baseval)
+            for i in range(baseval_len):
+                if not isinstance(baseval.index[i],datetime):
+                    raise ValueError('自定义基准日期输入格式错误')
+                if not isinstance(baseval[i],float):
+                    raise ValueError('自定义基准数值输入格式错误')  
+    ###获取特殊时期
+    sp_date=pd.read_excel(FileName,'特殊时期',index_col = 0)
+    sp_date=sp_date[['start','end']]
+    sp_date.columns = ['spstart','spend']
+    sp_date_temp = sp_date[sp_date.spstart < startdt]
+    sp_date = sp_date[sp_date.spstart >=startdt]
+    sp_date_temp2 = sp_date[sp_date.spend > enddt]
+    sp_date = sp_date[sp_date.spend <=enddt]
+    if len(sp_date_temp):
+        print("###下列日期超出了初始日期的范围,程序将其删除")
+        print(sp_date_temp)
+    if len(sp_date_temp2):
+        print("###下列日期超出了初始日期的范围,程序将其删除")
+        print(sp_date_temp2)
+    if len(sp_date) == 0 :
+        raise ValueError('无特殊日期,请先输入特殊日期')
+    else:
+        print("###我们考察的特殊日期为:")
+        print(sp_date)
+    if sp_date.shape[0]:
+        if sp_date['spstart'].min()<startdt or sp_date['spend'].max()>enddt:
+            raise ValueError('特殊时期日期输入错误，请在初始日期范围内输入日期')       
+        for i in sp_date.index:
+            if not isinstance(sp_date['spstart'].loc[i],datetime):
+                raise ValueError('特殊时期开始日期输入格式错误')
+            if not isinstance(sp_date['spend'].loc[i],datetime):
+                raise ValueError('特殊时期结束日期输入格式错误')
+    # return
+    return{'startdate':startdt,        # 开始时间
+           'enddate':enddt,            # 结束时间
+           'spreadyears':SpreadYears,  # 考察的年度
+           'riskfree':rf,              # 无风险利率
+           'fund_list':fund_list,      # 基金序列
+           'basecode':basecode,        # 基准代码
+           'basevalue':baseval,        # 基准净值序列
+           'drawdowndate':drawdowndt,  # 回撤测算截止时间
+           'analysismonth':anamon,     # 正负分析回溯月数
+           'minrate':mrate,            # 最小可接受收益率
+           'specialdate':sp_date,       # 特殊时期时间
+           'IsIndexFund':IsIndexFund   #  是否是指数基金
+           }
+    
+" get fund basic description "
+###基金的基础信息
+def get_fund_basic(fund_list):
+    wd=w.wss(','.join(fund_list),"sec_name,fund_fundmanager,fund_manager_startdate","unit=1","order=1")
+    wd2=w.wss(','.join(fund_list),"fund_manager_startdate,fund_setupdate,netasset_total","unit=1","order=2")
+    if wd.ErrorCode==0 and wd2.ErrorCode==0:
+        basic=pd.DataFrame(wd.Data,index=wd.Fields,columns=fund_list).T
+        basic.index.name='基金代码'
+        basic.columns=['基金名称','基金经理','任职日期1']
+        basic['任职日期1']=basic['任职日期1'].apply(lambda dt:dt.date())
+        
+        basic2=pd.DataFrame(wd2.Data,index=wd2.Fields,columns=fund_list).T
+        basic2.columns=['任职日期2','成立日期','最新规模(亿)']
+        basic2['任职日期2']=basic2['任职日期2'].apply(lambda dt:dt.date())
+        basic2['成立日期']=basic2['成立日期'].apply(lambda dt:dt.date())
+        basic2['最新规模(亿)']=basic2['最新规模(亿)']/1e8
+        TheBasic = pd.concat([basic,basic2],axis=1)
+        TheBasic['任职日期2'] = [str(i)  for i in TheBasic['任职日期2']]
+        TheBasic = TheBasic.replace('1899-12-30',np.NAN)
+    else:
+        print("Wind数据下载出错,选择读取本地数据！")
+        FundBasic = pd.read_excel("./data/FundBasic.xlsx")
+        TheBasic = FundBasic[FundBasic.基金代码.isin(fund_list)]
+        TheBasic = TheBasic.set_index("基金代码")
+    return TheBasic
+
+###基金的基础信息2
+def get_fund_basic2(fund_list):
+    wd=w.wss(','.join(fund_list),"sec_name,fund_fundmanager,fund_manager_startdate","unit=1","order=1")
+    wd2=w.wss(','.join(fund_list),"fund_manager_startdate,fund_setupdate,netasset_total","unit=1","order=2")   
+    wd3 = w.wss(','.join(fund_list), "fund_managementfeeratio")
+    if wd.ErrorCode==0 and wd2.ErrorCode==0 and wd3.ErrorCode==0:
+        basic=pd.DataFrame(wd.Data,index=wd.Fields,columns=fund_list).T
+        basic.index.name='基金代码'
+        basic.columns=['基金名称','基金经理','任职日期1']
+        basic['任职日期1']=basic['任职日期1'].apply(lambda dt:dt.date())        
+        basic2=pd.DataFrame(wd2.Data,index=wd2.Fields,columns=fund_list).T
+        basic2.columns=['任职日期2','成立日期','最新规模(亿)']
+        basic2['任职日期2']=basic2['任职日期2'].apply(lambda dt:dt.date())
+        basic2['成立日期']=basic2['成立日期'].apply(lambda dt:dt.date())
+        basic2['最新规模(亿)']=basic2['最新规模(亿)']/1e8
+        basic3=pd.DataFrame(wd3.Data,index=wd3.Fields,columns=fund_list).T
+        basic3.columns=['管理费率']
+        basic3["管理费率"] = basic3["管理费率"]/100
+        TheBasic = pd.concat([basic,basic2],axis=1)
+        TheBasic = pd.concat([TheBasic,basic3],axis=1)
+        TheBasic['任职日期2'] = [str(i)  for i in TheBasic['任职日期2']]
+        TheBasic = TheBasic.replace('1899-12-30',np.NAN)
+    else:
+        print("Wind数据下载出错,选择读取本地数据！")
+        FundBasic = pd.read_excel("./data/FundBasic.xlsx")
+        TheBasic = FundBasic[FundBasic.基金代码.isin(fund_list)]
+        TheBasic = TheBasic.set_index("基金代码")
+    return TheBasic
+
+###获取基准净值
+def get_benchmark_netvalue(fund_list,startdt,enddt):
+    StartDate = startdt.strftime("%Y-%m-%d")
+    EndDate = enddt.strftime("%Y-%m-%d")
+    fund_list = np.unique(fund_list)
+    wd=w.wsd(','.join(fund_list),"close",StartDate,EndDate,"")
+    FundNetValue = pd.DataFrame(wd.Data,index=fund_list,columns=wd.Times)
+    FundNetValue = FundNetValue.T
+    return(FundNetValue)
+
+    
+###获取基金净值  
+def get_fund_netvalue(fund_list,startdt,enddt,Update):
+    if enddt < datetime.now():
+        ###读取原始数据库数据
+        #TheData = pd.read_excel(io = "./data/基金日行情数据库.xlsx",index_col = 0)
+        TheData = pd.read_pickle("./data/基金日行情数据库.pkl")
+        print("###成功读取原始数据")
+        ###判断是否提取新数据
+        StartDate = TheData.columns[-1]
+        date1 = startdt.strftime("%Y-%m-%d")
+        date2 = enddt.strftime("%Y-%m-%d")
+        dates = w.tdays(date1, date2, "")
+        dates = dates.Data[0]
+        enddt = dates[-1]
+        if StartDate < enddt:
+            print("###提取基金净值：更新数据")
+            if enddt.strftime("%Y-%m-%d") == datetime.now().strftime("%Y-%m-%d"):
+                StartDate = TheData.columns[-1] + timedelta(1)
+                StartDate = StartDate.strftime("%Y-%m-%d")
+                if datetime.now().hour >= 23:
+                    EndDate = enddt
+                    EndDate = EndDate.strftime("%Y-%m-%d")
+                else:
+                    EndDate = enddt - timedelta(1)
+                    EndDate = EndDate.strftime("%Y-%m-%d")
+                if StartDate <= EndDate:
+                    print("###需要更新当天数据，当天未收盘，请收盘后再次更新，我们仅仅更新截止日期前一天的数据")
+                    FundCodeList = TheData.index
+                    wd=w.wsd(','.join(FundCodeList),"NAV_adj",StartDate,EndDate,"Period=D")
+                    thetmp = wd.Data
+                    if len(wd.Data)==1:
+                        FundNetValue = pd.DataFrame(thetmp[0],index=wd.Codes,columns=wd.Times)
+                    else:
+                        FundNetValue = pd.DataFrame(thetmp,index=wd.Codes,columns=wd.Times)
+                    FundNetValue.index.name = "FundCode"
+                    FundNetValue = FundNetValue.reset_index(drop=False)
+                    TheData = TheData.reset_index(drop=False)
+                    TheData = pd.merge(TheData,FundNetValue,on = "FundCode")
+                    TheData = TheData.set_index('FundCode')
+                    TheData = TheData.T
+                    TheData = TheData.set_index(pd.DatetimeIndex(pd.to_datetime(TheData.index)))
+                    TheData = TheData.T
+                else:
+                    print("###需要更新当天数据，请收盘后再次更新")
+            else:
+                StartDate = TheData.columns[-1] + timedelta(1)
+                StartDate = StartDate.strftime("%Y-%m-%d")
+                EndDate = enddt.strftime("%Y-%m-%d")
+                FundCodeList = TheData.index
+                wd=w.wsd(','.join(FundCodeList),"NAV_adj",StartDate,EndDate,"Period=D")
+                FundNetValue = pd.DataFrame(wd.Data,index=wd.Codes,columns=wd.Times)
+                FundNetValue.index.name = "FundCode"
+                #FundNetValue = FundNetValue.reset_index(drop=False)
+                #TheData = TheData.reset_index(drop=False)
+                #TheData = pd.merge(TheData,FundNetValue,on = "FundCode")
+                #TheData = TheData.set_index('FundCode')
+                TheData = pd.merge(TheData,FundNetValue,left_index = True,right_index = True)
+                TheData = TheData.T
+                TheData = TheData.set_index(pd.DatetimeIndex(pd.to_datetime(TheData.index)))
+                TheData = TheData.T
+            if Update:
+                #TheData.to_excel("./data/基金日行情数据库.xlsx")
+                TheData.to_pickle("./data/基金日行情数据库.pkl")
+        else:
+            print("###提取基金净值：不用更新数据")
+        TheData = TheData.T
+        fund_nv = TheData.loc[startdt.strftime("%Y-%m-%d"):enddt.strftime("%Y-%m-%d"),list(fund_list)]
+        fund_nv=fund_nv.set_index(pd.DatetimeIndex(pd.to_datetime(fund_nv.index))) # index: date->datetime
+    else:
+        raise ValueError('###提取基金净值：截止日期超过当前时间')
+    return fund_nv
+
+###由基金净值序列计算基金收益率序列
+def get_return_rate(fund_nv):
+    fnv=fund_nv.pct_change()         #计算基金收益率序列
+    fnv=fnv.drop(fnv.index[0])
+    return fnv
+
+'''
+calculation for return
+'''
+
+" year return , input: nv2 "
+def year_return(fund_data):
+    fundnv=fund_data.resample('BA-DEC').last()#提取每年年末净值
+    #fundnv = fundnv.dropna()
+    ytd=pd.Series(fundnv.columns)
+    ytd=fund_data.iloc[-1]/fundnv.iloc[-2]-1
+    if fundnv.index[-1]!=fund_data.index[-1]:
+        fundnv=fundnv.drop(fundnv.index[-1])
+    y_ret=fundnv.pct_change()
+    y_ret=y_ret.drop(y_ret.index[0]).T
+    a=y_ret.columns
+    y_ret.columns=[a[t].strftime('%Y') for t in range(len(a))] # datetime->str
+    y_ret = y_ret[sorted(y_ret.columns,reverse=True)]
+    y_re=y_ret.copy()
+    y_ret['YTD']=ytd
+    y_ret=y_ret[['YTD']+list(y_re.columns)] # ytd置前
+    return y_ret
+    
+" annual return , input: nv2,start,end "
+def ann_return(fund_data,start,end):
+    #y=int(end.strftime('%Y'))-int(start.strftime('%Y')) # 计算数据时间跨度
+    tmp = end - start
+    n=np.arange(1,int(tmp.days/365)+1) #生成y个
+    #nv=fund_data.resample('BM').last()
+    ann_ret=pd.DataFrame(index=fund_data.columns)
+    ann_ret=ann_ret.reset_index(drop=False)
+    for i in n:
+        print(i)
+        time1 = fund_data.index[-1]
+        time2 = datetime(time1.year - i,time1.month,time1.day)
+        time2 = fund_data.index[fund_data.index >= time2].min()
+        ret=((fund_data.loc[time1]/fund_data.loc[time2])**(1/i)-1)
+        ret=pd.DataFrame(ret.values,index=ret.index,columns=[str(n[i-1])+'年年化收益率'])
+        ret=ret.reset_index(drop=False)
+        ann_ret=pd.merge(ann_ret,ret,on=['index'],how='left')
+    ann_ret=ann_ret.set_index('index')
+    return ann_ret
+
+def Transfer1(TheData,TheIndex):
+    TheData_Rank = TheData.rank(method = "min",ascending=TheIndex)
+    TheData_Rank_Summary = TheData_Rank.describe()
+    TheData_Rank = pd.concat([TheData_Rank_Summary,TheData_Rank],axis=0)
+    return TheData_Rank
+            
+def Transfer2(TheData):
+    TheData_Summary = TheData.describe()
+    TheData = pd.concat([TheData_Summary,TheData],axis=0) 
+    return TheData
+
+def Transfer3(TheData):
+    TheData_Summary = ['count', 'mean', 'std', 'min', '25%', '50%', '75%', 'max']
+    TheData_Summary = pd.DataFrame(index=TheData_Summary)
+    TheData = pd.concat([TheData_Summary,TheData],axis=0) 
+    return TheData
+
+       
+" 1 year annual return , input: nv2,start,end "
+def one_ann_return(fund_data, start, end):
+    y = int(end.strftime('%Y')) - int(start.strftime('%Y'))  # 计算数据时间跨度
+    n = np.arange(1, y+1)  # 生成y-1个
+    nv = fund_data.resample('BM').last()
+    oann_ret = pd.DataFrame(index=fund_data.columns)
+    oann_ret = oann_ret.reset_index(drop=False)
+    for i in n:
+        if i == 1:
+            if fund_data.index[-1] != nv.index[-1]:
+                aa = fund_data.index[(-2 - 12 * i):-1]
+            else:
+                aa = fund_data.index[(-1 - 12 * i):]
+        else:
+            if fund_data.index[-1] != nv.index[-1]:
+                aa = fund_data.index[(-2 - 12 * i):(-1 - 12 * (i - 1))]
+            else:
+                aa = fund_data.index[(-1 - 12 * i):(-12 * (i - 1))]
+        ret = ((fund_data.loc[aa[-1]] / fund_data.loc[aa[0]]) ** (1 / 1) - 1)
+        en = end - (i - 1) * timedelta(days=365)
+        st = end - i * timedelta(days=365)
+        if st < start:
+            st = start
+        ret = pd.DataFrame(ret.values, index=ret.index,
+                           columns=[st.strftime('%Y-%m-%d') + '到' + en.strftime('%Y-%m-%d')])
+        ret = ret.reset_index(drop=False)
+        oann_ret = pd.merge(oann_ret, ret, on=['index'], how='left')
+    oann_ret = oann_ret.set_index('index')
+    return oann_ret
+
+" 2 year annual return , input: nv2,start,end "
+def double_ann_return(fund_data,start,end):
+    y=int(end.strftime('%Y'))-int(start.strftime('%Y')) # 计算数据时间跨度
+    n=np.arange(1,y) #生成y-1个
+    nv=fund_data.resample('BM').last()
+    dann_ret=pd.DataFrame(index=fund_data.columns)
+    dann_ret=dann_ret.reset_index(drop=False)
+    for i in n:
+        if i==1:
+            if fund_data.index[-1]!=nv.index[-1]:
+                aa=fund_data.index[(-2-12*(i+1)):-1]
+            else:
+                aa=fund_data.index[(-1-12*(i+1)):]
+        else:
+            if fund_data.index[-1]!=nv.index[-1]:
+                aa=fund_data.index[(-2-12*(i+1)):(-1-12*(i-1))]
+            else:
+                aa=fund_data.index[(-1-12*(i+1)):(-12*(i-1))]
+        ret=((fund_data.loc[aa[-1]]/fund_data.loc[aa[0]])**(1/2)-1)
+        en=end-(i-1)*timedelta(days=365)
+        st=end-(i+1)*timedelta(days=365)
+        if st<start:
+            st=start
+        ret=pd.DataFrame(ret.values,index=ret.index,columns=[st.strftime('%Y-%m-%d')+'到'+en.strftime('%Y-%m-%d')])
+        ret=ret.reset_index(drop=False)
+        dann_ret=pd.merge(dann_ret,ret,on=['index'],how='left')
+    dann_ret=dann_ret.set_index('index')
+    return dann_ret
+    
+" 3 year annual return , input: nv2,start,end "
+def triple_ann_return(fund_data,start,end):
+    y=int(end.strftime('%Y'))-int(start.strftime('%Y')) # 计算数据时间跨度
+    n=np.arange(1,y-1) #生成y-2个
+    nv=fund_data.resample('BM').last()
+    tann_ret=pd.DataFrame(index=fund_data.columns)
+    tann_ret=tann_ret.reset_index(drop=False)
+    for i in n:
+        if i==1:
+            if fund_data.index[-1]!=nv.index[-1]:
+                aa=fund_data.index[(-2-12*(i+2)):-1]
+            else:
+                aa=fund_data.index[(-1-12*(i+2)):]
+        else:
+            if fund_data.index[-1]!=nv.index[-1]:
+                aa=fund_data.index[(-2-12*(i+2)):(-1-12*(i-1))]
+            else:
+                aa=fund_data.index[(-1-12*(i+2)):(-12*(i-1))]
+        ret=((fund_data.loc[aa[-1]]/fund_data.loc[aa[0]])**(1/3)-1)
+        en=end-(i-1)*timedelta(days=365)
+        st=end-(i+2)*timedelta(days=365)
+        if st<start:
+            st=start        
+        ret=pd.DataFrame(ret.values,index=ret.index,columns=[st.strftime('%Y-%m-%d')+'到'+en.strftime('%Y-%m-%d')])
+        ret=ret.reset_index(drop=False)
+        tann_ret=pd.merge(tann_ret,ret,on=['index'],how='left')
+    tann_ret=tann_ret.set_index('index')
+    return tann_ret
+    
+'''
+calculation for volability
+'''
+
+" year volability , input: fnv "
+def year_vol(fund_data):
+    fundnv=fund_data.resample('BA-DEC').last()
+    if fund_data.index[-1]!=fundnv.index[-1]:
+        fundnv=fundnv.drop(fundnv.index[-1])
+    time=fundnv.index
+    y_vol=pd.DataFrame(index=fund_data.columns)
+    y_vol=y_vol.reset_index(drop=False)
+    for i in range(0,len(time)):
+        if i==0:
+            t=time[i]
+            aa=fund_data.loc[fund_data.index<=t]
+            vol=pd.DataFrame(index=aa.columns,columns=[t])
+            for j in aa.columns:
+                l=len(aa[j])
+                if l>=6:  # 计算波动率时应至少保证有半年以上的数据 ## Lesile批注：有误
+                    vol[t].loc[j]=(aa[j].var()*12)**0.5
+                else:
+                    vol[t].loc[j]=np.nan
+        else:
+            t1=time[i-1]
+            t2=time[i]
+            aa=fund_data.loc[fund_data.index>t1]
+            aa=aa.loc[aa.index<=t2]
+            vol=pd.DataFrame(index=aa.columns,columns=[t2])
+            for j in aa.columns:
+                l=len(aa[j])
+                if l>5:  # 计算波动率时应至少保证有半年以上的数据
+                    vol[t2].loc[j]=(aa[j].var()*12)**0.5
+                else:
+                    vol[t2].loc[j]=np.nan
+        vol=vol.reset_index(drop=False)
+        y_vol=pd.merge(y_vol,vol,on='index',how='left')
+    y_vol=y_vol.set_index('index')
+    a=y_vol.columns
+    y_vol.columns=[a[t].strftime('%Y') for t in range(len(a))]
+    y_vol = y_vol[sorted(y_vol.columns,reverse = True)]
+    for i in y_vol.columns:
+        y_vol[i] = y_vol[i].astype(np.float)
+    return y_vol.dropna(axis=1,how='all')
+    
+def year_vol2(fund_data):
+    """
+    仅仅计算完整年度的波动率
+    """
+    fundnv=fund_data.resample('BA-DEC').last()
+    if fund_data.index[-1]!=fundnv.index[-1]:
+        fundnv=fundnv.drop(fundnv.index[-1])
+    time=fundnv.index
+    y_vol=pd.DataFrame(index=fund_data.columns)
+    y_vol=y_vol.reset_index(drop=False)
+    for i in range(0,len(time)):
+        if i==0:
+            t=time[i]
+            aa=fund_data.loc[fund_data.index<=t]
+            vol=pd.DataFrame(index=aa.columns,columns=[t])
+            for j in aa.columns:
+                TheA = aa[j]
+                TheA = TheA.dropna()
+                l = len(TheA)
+                if l==12:  # 计算波动率时应至少保证有半年以上的数据 ## Lesile批注：有误
+                    vol[t].loc[j]=(aa[j].var()*12)**0.5
+                else:
+                    vol[t].loc[j]=np.nan
+        else:
+            t1=time[i-1]
+            t2=time[i]
+            aa=fund_data.loc[fund_data.index>t1]
+            aa=aa.loc[aa.index<=t2]
+            vol=pd.DataFrame(index=aa.columns,columns=[t2])
+            for j in aa.columns:
+                TheA = aa[j]
+                TheA = TheA.dropna()
+                l = len(TheA)
+                if l==12:  # 计算波动率时应至少保证有半年以上的数据
+                    vol[t2].loc[j]=(aa[j].var()*12)**0.5
+                else:
+                    vol[t2].loc[j]=np.nan
+        vol=vol.reset_index(drop=False)
+        y_vol=pd.merge(y_vol,vol,on='index',how='left')
+    y_vol=y_vol.set_index('index')
+    a=y_vol.columns
+    y_vol.columns=[a[t].strftime('%Y') for t in range(len(a))]
+    y_vol = y_vol[sorted(y_vol.columns,reverse = True)]
+    for i in y_vol.columns:
+        y_vol[i] = y_vol[i].astype(np.float)
+    return y_vol.dropna(axis=1,how='all')
+    
+" annual volability , input:fnv,start,end "
+def ann_vol(fund_data,start,end):
+    y=int(end.strftime('%Y'))-int(start.strftime('%Y'))
+    n=np.arange(1,y+1) #生成y个
+    nv=fund_data.resample('BM').last()
+    ann_vol=pd.DataFrame(index=fund_data.columns)
+    ann_vol=ann_vol.reset_index(drop=False)
+    for i in n:
+        if fund_data.index[-1]!=nv.index[-1]:
+            var=fund_data.index[(-1-12*i):-1]
+        else:
+            var=fund_data.index[(-12*i):]
+        aa=fund_data.loc[var]
+        exist=aa.loc[aa.index[0]][aa.loc[aa.index[0]].notnull()] # 处理缺省数据
+        past=aa[exist.index].std()*12**0.5
+        past=pd.DataFrame(past.values,index=past.index,columns=[str(n[i-1])+'年年化波动率'])
+        past=past.reset_index(drop=False)
+        ann_vol=pd.merge(ann_vol,past,on=['index'],how='left')
+    ann_vol=ann_vol.set_index('index')
+    return ann_vol     
+
+
+" 1 annual volability , input:fnv,start,end "
+def one_ann_vol(fund_data,start,end):
+    y=int(end.strftime('%Y'))-int(start.strftime('%Y'))
+    n=np.arange(1,y+1) #生成y-1个
+    nv=fund_data.resample('BM').last()
+    oann_vol=pd.DataFrame(index=fund_data.columns)
+    oann_vol=oann_vol.reset_index(drop=False)
+    for i in n:
+        if i==1:
+            if fund_data.index[-1]!=nv.index[-1]:
+                var=fund_data.index[(-1-12*i):-1]
+            else:
+                var=fund_data.index[(-12*i):]
+        else:
+            if fund_data.index[-1]!=nv.index[-1]:
+                var=fund_data.index[(-1-12*i):(-1-12*(i-1))]
+            else:
+                var=fund_data.index[(-12*i):(-12*(i-1))]
+        aa=fund_data.loc[var]
+        exist=aa.loc[aa.index[0]][aa.loc[aa.index[0]].notnull()] # 处理缺省数据
+        past=aa[exist.index].std()*12**0.5
+        en=end-(i-1)*timedelta(days=365)
+        st=end-i*timedelta(days=365)
+        if st<start:
+            st=start
+        past=pd.DataFrame(past.values,index=past.index,columns=[st.strftime('%Y-%m-%d')+'到'+en.strftime('%Y-%m-%d')])
+        past=past.reset_index(drop=False)
+        oann_vol=pd.merge(oann_vol,past,on=['index'],how='left')
+    oann_vol=oann_vol.set_index('index')
+    return oann_vol
+
+
+" 2 annual volability , input:fnv,start,end "
+def double_ann_vol(fund_data,start,end):
+    y=int(end.strftime('%Y'))-int(start.strftime('%Y'))
+    n=np.arange(1,y) #生成y-1个
+    nv=fund_data.resample('BM').last()
+    dann_vol=pd.DataFrame(index=fund_data.columns)
+    dann_vol=dann_vol.reset_index(drop=False)
+    for i in n:
+        if i==1:
+            if fund_data.index[-1]!=nv.index[-1]:
+                var=fund_data.index[(-1-12*(i+1)):-1]
+            else:
+                var=fund_data.index[(-12*(i+1)):]
+        else:
+            if fund_data.index[-1]!=nv.index[-1]:
+                var=fund_data.index[(-1-12*(i+1)):(-1-12*(i-1))]
+            else:
+                var=fund_data.index[(-12*(i+1)):(-12*(i-1))]
+        aa=fund_data.loc[var]
+        exist=aa.loc[aa.index[0]][aa.loc[aa.index[0]].notnull()] # 处理缺省数据
+        past=aa[exist.index].std()*12**0.5
+        en=end-(i-1)*timedelta(days=365)
+        st=end-(i+1)*timedelta(days=365)
+        if st<start:
+            st=start
+        past=pd.DataFrame(past.values,index=past.index,columns=[st.strftime('%Y-%m-%d')+'到'+en.strftime('%Y-%m-%d')])
+        past=past.reset_index(drop=False)
+        dann_vol=pd.merge(dann_vol,past,on=['index'],how='left')
+    dann_vol=dann_vol.set_index('index')
+    return dann_vol         
+    
+" 3 annual volability , input:fnv,start,end "
+def triple_ann_vol(fund_data,start,end):
+    y=int(end.strftime('%Y'))-int(start.strftime('%Y'))
+    n=np.arange(1,y-1) #生成y-2个
+    nv=fund_data.resample('BM').last()
+    tann_vol=pd.DataFrame(index=fund_data.columns)
+    tann_vol=tann_vol.reset_index(drop=False)
+    for i in n:
+        if i==1:
+            if fund_data.index[-1]!=nv.index[-1]:
+                var=fund_data.index[(-1-12*(i+2)):-1]
+            else:
+                var=fund_data.index[(-12*(i+2)):]
+        else:
+            if fund_data.index[-1]!=nv.index[-1]:
+                var=fund_data.index[(-1-12*(i+2)):(-1-12*(i-1))]
+            else:
+                var=fund_data.index[(-12*(i+2)):(-12*(i-1))]
+        aa=fund_data.loc[var]
+        exist=aa.loc[aa.index[0]][aa.loc[aa.index[0]].notnull()] # 处理缺省数据
+        past=aa[exist.index].std()*12**0.5
+        en=end-(i-1)*timedelta(days=365)
+        st=end-(i+2)*timedelta(days=365)
+        if st<start:
+            st=start
+        past=pd.DataFrame(past.values,index=past.index,columns=[st.strftime('%Y-%m-%d')+'到'+en.strftime('%Y-%m-%d')])
+        past=past.reset_index(drop=False)
+        tann_vol=pd.merge(tann_vol,past,on=['index'],how='left')
+    tann_vol=tann_vol.set_index('index')
+    return tann_vol         
+    
+'''
+calculation for excess return
+'''
+# input: fnv,bscode
+# row
+def exreturn0(fund_data,basecode):
+    ext = fund_data.copy()
+    temp = ext.loc[basecode].copy()
+    for t in ext.index:
+        ext.loc[t] = ext.loc[t] - temp
+    return ext
+
+
+def exreturn1(fund_data,basecode,start,end,flag):
+    ext=fund_data.copy()
+    temp=ext.loc[basecode].copy()
+    for t in ext.index:
+        ext.loc[t]=ext.loc[t]-temp
+    ext.columns=np.arange(len(ext.columns))
+    if flag==0:
+        n=np.arange(1,len(ext.columns)+1)
+        for i in n:
+            ext.rename(columns={i-1:str(n[i-1])+'年年化超额收益率'},inplace=True)
+    elif flag==1:  
+        n=np.arange(1,len(ext.columns)+1)
+        for i in n:
+            en=end-(i-1)*timedelta(days=365)
+            st=end-(i+1)*timedelta(days=365)
+            if st<start:
+                st=start
+            ext.rename(columns={i-1:st.strftime('%Y-%m-%d')+'到'+en.strftime('%Y-%m-%d')},inplace=True)
+    elif flag==2:
+        n=np.arange(1,len(ext.columns)+1)
+        for i in n:
+            en=end-(i-1)*timedelta(days=365)
+            st=end-(i+2)*timedelta(days=365)
+            if st<start:
+                st=start
+            ext.rename(columns={i-1:st.strftime('%Y-%m-%d')+'到'+en.strftime('%Y-%m-%d')},inplace=True)
+    elif flag == 3:
+        n = np.arange(1, len(ext.columns) + 1)
+        for i in n:
+            en = end - (i - 1) * timedelta(days=365)
+            st = end - i* timedelta(days=365)
+            if st < start:
+                st = start
+            ext.rename(columns={i - 1: st.strftime('%Y-%m-%d') + '到' + en.strftime('%Y-%m-%d')}, inplace=True)
+    else:
+        raise ValueError('输入错误')
+    return ext
+"""
+def exreturn1(fund_data,basecode,start,end,flag):
+    ext=fund_data.copy()
+    temp=ext.loc[basecode].copy()
+    for t in ext.index:
+        ext.loc[t]=ext.loc[t]-temp
+    ext.columns=[np.arange(len(ext.columns))]
+    if flag==0:
+        n=np.arange(1,len(ext.columns)+1)
+        for i in n:
+            ext.rename(columns={i-1:str(n[i-1])+'年年化超额收益率'},inplace=True)
+    elif flag==1:  
+        n=np.arange(1,len(ext.columns)+1)
+        for i in n:
+            en=end-(i-1)*timedelta(days=365)
+            st=end-(i+1)*timedelta(days=365)
+            if st<start:
+                st=start
+            ext.rename(columns={i-1:st.strftime('%Y-%m-%d')+'到'+en.strftime('%Y-%m-%d')},inplace=True)
+    elif flag==2:
+        n=np.arange(1,len(ext.columns)+1)
+        for i in n:
+            en=end-(i-1)*timedelta(days=365)
+            st=end-(i+2)*timedelta(days=365)
+            if st<start:
+                st=start
+            ext.rename(columns={i-1:st.strftime('%Y-%m-%d')+'到'+en.strftime('%Y-%m-%d')},inplace=True)
+    else:
+        raise ValueError('输入错误')
+    return ext
+"""
+
+# column
+def exreturn2(fund_data,basecode):
+    ext=fund_data.copy()
+    temp=ext[basecode].copy()
+    for t in ext.columns:
+        ext[t]=ext[t]-temp
+    return ext
+# column
+def exreturn3(fund_data,basecode):
+    ext=fund_data.copy()
+    ext = ext.T
+    temp=ext[basecode].copy()
+    for t in ext.columns:
+        ext[t]=ext[t]-temp
+    ext = ext.T
+    return ext
+
+def year_return2(fund_data):
+    fundnv=fund_data.resample('BA-DEC').last()#提取每年年末净值
+    if fundnv.index[-1]!=fund_data.index[-1]:
+        fundnv=fundnv.drop(fundnv.index[-1])
+    y_ret2=fundnv.pct_change()
+    y_ret2=y_ret2.drop(y_ret2.index[0]).T
+    a=y_ret2.columns
+    y_ret2.columns=[a[t].strftime('%Y') for t in range(len(a))] # datetime->str
+    y_ret2 = y_ret2[sorted(y_ret2.columns,reverse=True)]
+    return y_ret2
+
+   
+'''
+calculation for tracking error
+'''
+
+" annual tracking error , input:ext,start,end "
+def tracking_error(ext,start,end):
+    t_err=ann_vol(ext,start,end)
+    n=np.arange(1,len(t_err.columns)+1)
+    for i in n:
+        t_err.rename(columns={str(n[i-1])+'年年化波动率':str(n[i-1])+'年年化跟踪误差'},inplace=True)
+    return t_err
+
+def year_tracking_error(ext):
+    y_err=year_vol(ext)
+    return y_err
+
+def year_tracking_error2(ext):
+    y_err=year_vol2(ext)
+    return y_err
+
+
+" 1 annual tracking error , input:ext,start,end "
+def onetracking_error(ext,start,end):
+    ot_err=one_ann_vol(ext,start,end)
+    return ot_err
+
+
+" 2 annual tracking error , input:ext,start,end "
+def doubletracking_error(ext,start,end):
+    dt_err=double_ann_vol(ext,start,end)
+    return dt_err
+
+" 3 annual tracking error , input:ext,start,end "
+def tripletracking_error(ext,start,end):
+    tt_err=triple_ann_vol(ext,start,end)
+    return tt_err
+
+'''
+calculation for downside volability
+'''
+def year_down_vol(fund_data,mrate,start,end):
+    y = int(end.strftime('%Y')) - int(start.strftime('%Y'))
+    n = np.arange(1, y)  # 生成y个
+    if int(end.strftime('%m'))==12:
+        num = 12*(y+1)
+    else:
+        num = 12*y
+    fund_data2 = fund_data[0:num]
+    nv = fund_data2.resample('BM').last()
+    dwann_vol = pd.DataFrame(index=fund_data2.columns)
+    dwann_vol=dwann_vol.reset_index(drop=False)
+    for i in n:
+        if fund_data2.index[-1]!=nv.index[-1]:
+            var=fund_data2.index[(-1-12*i):(-12*(i-1)-1)]
+        else:
+            var=fund_data2.index[(-12*i):]
+        aa=fund_data2.loc[var]
+        exist=aa.loc[aa.index[0]][aa.loc[aa.index[0]].notnull()] # 处理缺省数据
+        aa1=aa[exist.index]
+        l=len(aa1)
+        aa2=(aa1[aa1<mrate]-mrate)**2
+        st = end - i * timedelta(days=365)
+        past=pd.DataFrame(index=fund_data2.columns,columns=[st.strftime('%Y')])
+        for j in aa2.columns:
+            past[st.strftime('%Y')].loc[j]=(aa2[j].sum()/l*12)**0.5
+        past=past.reset_index(drop=False)
+        dwann_vol=pd.merge(dwann_vol,past,on=['index'],how='left')
+    dwann_vol=dwann_vol.set_index('index')
+    for i in dwann_vol.columns:
+        dwann_vol[i] = dwann_vol[i].astype(np.float)
+    return dwann_vol
+" annual downside volability , input:fnv,start,end "
+def annual_down_vol(fund_data,mrate,start,end):
+    y=int(end.strftime('%Y'))-int(start.strftime('%Y'))
+    n=np.arange(1,y+1) #生成y个
+    nv=fund_data.resample('BM').last()
+    dwann_vol=pd.DataFrame(index=fund_data.columns)
+    dwann_vol=dwann_vol.reset_index(drop=False)
+    for i in n:
+        if fund_data.index[-1]!=nv.index[-1]:
+            var=fund_data.index[(-1-12*i):-1]
+        else:
+            var=fund_data.index[(-12*i):]
+        aa=fund_data.loc[var]
+        exist=aa.loc[aa.index[0]][aa.loc[aa.index[0]].notnull()] # 处理缺省数据
+        aa1=aa[exist.index]
+        l=len(aa1)        
+        aa2=(aa1[aa1<mrate]-mrate)**2
+        past=pd.DataFrame(index=fund_data.columns,columns=[str(n[i-1])+'年年化下行波动率'])
+        for j in aa2.columns:
+            past[str(n[i-1])+'年年化下行波动率'].loc[j]=(aa2[j].sum()/l*12)**0.5
+        past=past.reset_index(drop=False)
+        dwann_vol=pd.merge(dwann_vol,past,on=['index'],how='left')
+    dwann_vol=dwann_vol.set_index('index')
+    for i in dwann_vol.columns:
+        dwann_vol[i] = dwann_vol[i].astype(np.float)
+    return dwann_vol     
+
+" 2 annual downside volability , input:fnv,start,end "
+def doubleannual_down_vol(fund_data,mrate,start,end):
+    y=int(end.strftime('%Y'))-int(start.strftime('%Y'))
+    n=np.arange(1,y) #生成y-1个
+    nv=fund_data.resample('BM').last()
+    dwdann_vol=pd.DataFrame(index=fund_data.columns)
+    dwdann_vol=dwdann_vol.reset_index(drop=False)
+    for i in n:
+        if i==1:
+            if fund_data.index[-1]!=nv.index[-1]:
+                var=fund_data.index[(-1-12*(i+1)):-1]
+            else:
+                var=fund_data.index[(-12*(i+1)):]
+        else:
+            if fund_data.index[-1]!=nv.index[-1]:
+                var=fund_data.index[(-1-12*(i+1)):(-1-12*(i-1))]
+            else:
+                var=fund_data.index[(-12*(i+1)):(-12*(i-1))]
+        aa=fund_data.loc[var]
+        exist=aa.loc[aa.index[0]][aa.loc[aa.index[0]].notnull()] # 处理缺省数据
+        aa1=aa[exist.index]
+        l=len(aa1)  
+        aa2=(aa1[aa1<mrate]-mrate)**2
+        en=end-(i-1)*timedelta(days=365)
+        st=end-(i+1)*timedelta(days=365)
+        if st<start:
+            st=start
+        past=pd.DataFrame(index=fund_data.columns,columns=[st.strftime('%Y-%m-%d')+'到'+en.strftime('%Y-%m-%d')])
+        for j in aa2.columns:
+            past[st.strftime('%Y-%m-%d')+'到'+en.strftime('%Y-%m-%d')].loc[j]=(aa2[j].sum()/l*12)**0.5
+        past=past.reset_index(drop=False)
+        dwdann_vol=pd.merge(dwdann_vol,past,on=['index'],how='left')
+    dwdann_vol=dwdann_vol.set_index('index')
+    for i in dwdann_vol.columns:
+        dwdann_vol[i] = dwdann_vol[i].astype(np.float)
+    return dwdann_vol         
+    
+" 3 annual downside volability , input:fnv,start,end "
+def tripleannual_down_vol(fund_data,mrate,start,end):
+    y=int(end.strftime('%Y'))-int(start.strftime('%Y'))
+    n=np.arange(1,y-1) #生成y-2个
+    nv=fund_data.resample('BM').last()
+    dwtann_vol=pd.DataFrame(index=fund_data.columns)
+    dwtann_vol=dwtann_vol.reset_index(drop=False)
+    for i in n:
+        if i==1:
+            if fund_data.index[-1]!=nv.index[-1]:
+                var=fund_data.index[(-1-12*(i+2)):-1]
+            else:
+                var=fund_data.index[(-12*(i+2)):]
+        else:
+            if fund_data.index[-1]!=nv.index[-1]:
+                var=fund_data.index[(-1-12*(i+2)):(-1-12*(i-1))]
+            else:
+                var=fund_data.index[(-12*(i+2)):(-12*(i-1))]
+        aa=fund_data.loc[var]
+        exist=aa.loc[aa.index[0]][aa.loc[aa.index[0]].notnull()] # 处理缺省数据
+        aa1=aa[exist.index]
+        l=len(aa1)  
+        aa2=(aa1[aa1<mrate]-mrate)**2
+        en=end-(i-1)*timedelta(days=365)
+        st=end-(i+2)*timedelta(days=365)
+        if st<start:
+            st=start
+        past=pd.DataFrame(index=fund_data.columns,columns=[st.strftime('%Y-%m-%d')+'到'+en.strftime('%Y-%m-%d')])
+        for j in aa2.columns:
+            past[st.strftime('%Y-%m-%d')+'到'+en.strftime('%Y-%m-%d')].loc[j]=(aa2[j].sum()/l*12)**0.5
+        past=past.reset_index(drop=False)
+        dwtann_vol=pd.merge(dwtann_vol,past,on=['index'],how='left')
+    dwtann_vol=dwtann_vol.set_index('index')
+    for i in dwtann_vol.columns:
+        dwtann_vol[i] = dwtann_vol[i].astype(np.float)
+    return dwtann_vol         
+    
+" calculation for alpha & beta , input: fnv, bv,rf "
+def alphabet_cal(fnv,rf):
+    fnv1=fnv-rf/12
+    alpha=pd.DataFrame(index=fnv.columns,columns=['alpha'])
+    beta=pd.DataFrame(index=fnv.columns,columns=['beta'])
+    for i in fnv1.columns:
+        ThisNetValue = fnv1[[fnv1.columns[0],i]]
+        ThisNetValue = ThisNetValue.dropna()
+        if ThisNetValue.shape[0] >= 24:
+            X = np.vstack([np.ones(ThisNetValue.shape[0]),ThisNetValue.iloc[:,0].values]).T
+            y = ThisNetValue.iloc[:,1].values
+            alpha['alpha'].loc[i],beta['beta'].loc[i] = np.linalg.inv(X.T.dot(X)).dot(X.T).dot(y)
+        else:
+            alpha['alpha'].loc[i] = np.nan
+            beta['beta'].loc[i] = np.nan
+    alpha=alpha*12
+    for i in alpha.columns:
+        alpha[i] = alpha[i].astype(np.float)
+    for i in beta.columns:
+        beta[i] = beta[i].astype(np.float)
+    return alpha,beta
+
+" calculation for alpha & beta , input: fnv, bv,rf "
+def alphabet_cal_yearly(fnv,rf):
+    fnv1=fnv-rf/12
+    fundnv=fnv1.resample('BA-DEC').last()
+    if fnv1.index[-1]!=fundnv.index[-1]:
+        fundnv=fundnv.drop(fundnv.index[-1])
+    time=fundnv.index
+    TheAlpha=pd.DataFrame(index=fnv1.columns)
+    TheAlpha=TheAlpha.reset_index(drop=False)
+    TheBeta=pd.DataFrame(index=fnv1.columns)
+    TheBeta=TheBeta.reset_index(drop=False)
+    for i in range(0,len(time)-1):
+        t1=time[i]
+        t2=time[i+1]
+        aa=fnv1.loc[fnv1.index>t1]
+        aa=aa.loc[aa.index<=t2]
+        t2 = t2.strftime("%Y")
+        t2_1 = t2 + '_Alpha'
+        t2_2 = t2 + '_Beta'
+        TheAlphaTmp=pd.DataFrame(index=aa.columns,columns=[t2_1])
+        TheBetaTmp=pd.DataFrame(index=aa.columns,columns=[t2_2])
+        for j in aa.columns:
+            ThisNetValue = aa[[aa.columns[0],j]]
+            ThisNetValue = ThisNetValue.dropna()
+            if len(ThisNetValue) <= 5:
+                TheAlphaTmp[t2_1].loc[j],TheBetaTmp[t2_2].loc[j] = np.array([np.nan,np.nan])
+            else:
+                X = np.vstack([np.ones(ThisNetValue.shape[0]),ThisNetValue.iloc[:,0].values]).T
+                y = ThisNetValue.iloc[:,1].values
+                TheAlphaTmp[t2_1].loc[j],TheBetaTmp[t2_2].loc[j] = np.linalg.inv(X.T.dot(X)).dot(X.T).dot(y)
+        TheAlphaTmp=TheAlphaTmp.reset_index(drop=False)
+        TheAlpha=pd.merge(TheAlpha,TheAlphaTmp,on='index',how='left')
+        TheBetaTmp=TheBetaTmp.reset_index(drop=False)
+        TheBeta=pd.merge(TheBeta,TheBetaTmp,on='index',how='left')
+    TheAlpha=TheAlpha.set_index('index')
+    TheBeta=TheBeta.set_index('index')
+    TheAlpha=TheAlpha*12
+    TheAlpha = TheAlpha[sorted(TheAlpha.columns,reverse = True)]
+    TheBeta = TheBeta[sorted(TheBeta.columns,reverse = True)]
+    for i in TheAlpha.columns:
+        TheAlpha[i] = TheAlpha[i].astype(np.float)
+    for i in TheBeta.columns:
+        TheBeta[i] = TheBeta[i].astype(np.float)
+    return TheAlpha,TheBeta
+
+def alphabet_cal_rollyear(fnv,rf,end,start):
+    fnv1=fnv-rf/12
+    tmp = end - start
+    n=np.arange(1,int(tmp.days/365)+1) #生成y个
+    TheAlpha=pd.DataFrame(index=fnv1.columns)
+    TheAlpha=TheAlpha.reset_index(drop=False)
+    TheBeta=pd.DataFrame(index=fnv1.columns)
+    TheBeta=TheBeta.reset_index(drop=False)
+    for i in n:
+        time1 = fnv1.index[-1]
+        # time2 = datetime(time1.year - i,time1.month,time1.day)
+        time2 = pd.to_datetime(time1) - pd.offsets.MonthEnd(i*12)
+        time2 = fnv1.index[fnv1.index <= time2].max()
+        aa=fnv1.loc[fnv1.index<=time1]
+        aa=aa.loc[aa.index>time2]
+        t2 = '近'+str(n[i-1])+'年'
+        t2_1 = t2 + '_Alpha'
+        t2_2 = t2 + '_Beta'
+        TheAlphaTmp=pd.DataFrame(index=aa.columns,columns=[t2_1])
+        TheBetaTmp=pd.DataFrame(index=aa.columns,columns=[t2_2])
+        for j in aa.columns:
+            ThisNetValue = aa[[aa.columns[0],j]]
+            ThisNetValue = ThisNetValue.dropna()
+            if len(ThisNetValue) <= 5:
+                TheAlphaTmp[t2_1].loc[j],TheBetaTmp[t2_2].loc[j] = np.array([np.nan,np.nan])
+            else:
+                X = np.vstack([np.ones(ThisNetValue.shape[0]),ThisNetValue.iloc[:,0].values]).T
+                y = ThisNetValue.iloc[:,1].values
+                TheAlphaTmp[t2_1].loc[j],TheBetaTmp[t2_2].loc[j] = np.linalg.inv(X.T.dot(X)).dot(X.T).dot(y)   
+        TheAlphaTmp=TheAlphaTmp.reset_index(drop=False)
+        TheAlpha=pd.merge(TheAlpha,TheAlphaTmp,on='index',how='left')
+        TheBetaTmp=TheBetaTmp.reset_index(drop=False)
+        TheBeta=pd.merge(TheBeta,TheBetaTmp,on='index',how='left')
+    TheAlpha=TheAlpha.set_index('index')
+    TheBeta=TheBeta.set_index('index')
+    TheAlpha=TheAlpha*12
+    #TheAlpha.index = [i[0:9] for i in TheAlpha.index]
+    #TheAlpha = TheAlpha[sorted(TheAlpha.columns,reverse = True)]
+    #TheBeta = TheBeta[sorted(TheBeta.columns,reverse = True)]
+    for i in TheAlpha.columns:
+        TheAlpha[i] = TheAlpha[i].astype(np.float)
+    for i in TheBeta.columns:
+        TheBeta[i] = TheBeta[i].astype(np.float)
+    return TheAlpha,TheBeta
+
+
+def TimingRatio(fnv,rf):
+    fnv1 = fnv-rf/365
+    BetaBull = pd.DataFrame(index=fnv.columns,columns=['BetaBull'])
+    BetaBear = pd.DataFrame(index=fnv.columns,columns=['BetaBear'])
+    TheTimingRatio = pd.DataFrame(index=fnv.columns,columns=['TheTimingRatio'])
+    for i in fnv1.columns:
+        ThisNetValue = fnv1[[fnv1.columns[0],i]]
+        ThisNetValue = ThisNetValue.dropna()
+        if ThisNetValue.shape[0] >= 24:
+            ThisNetValue1 = ThisNetValue[ThisNetValue.iloc[:,0] > 0]
+            ThisNetValue2 = ThisNetValue[ThisNetValue.iloc[:,0] < 0]
+            X = np.vstack([np.ones(ThisNetValue1.shape[0]),ThisNetValue1.iloc[:,0].values]).T
+            y = ThisNetValue1.iloc[:,1].values
+            BetaBull['BetaBull'].loc[i] = np.linalg.inv(X.T.dot(X)).dot(X.T).dot(y)[1]
+            X = np.vstack([np.ones(ThisNetValue2.shape[0]),ThisNetValue2.iloc[:,0].values]).T
+            y = ThisNetValue2.iloc[:,1].values
+            BetaBear['BetaBear'].loc[i] = np.linalg.inv(X.T.dot(X)).dot(X.T).dot(y)[1]
+            TheTimingRatio['TheTimingRatio'].loc[i] = BetaBull['BetaBull'].loc[i]/BetaBear['BetaBear'].loc[i]
+        else:
+            BetaBull['BetaBull'].loc[i] = np.nan
+            BetaBear['BetaBear'].loc[i] = np.nan
+            TheTimingRatio['TheTimingRatio'].loc[i] = np.nan
+    return BetaBull,BetaBear,TheTimingRatio
+
+    
+    
+    
+'''
+calculation for drawdown
+'''
+" calculation for continuous count input: fnv为重置index的收益率时间序列，fnv0为不重置index的净值时间序列" 
+def dur_cal(fnv,fnv0,i):
+    a=fnv.copy()
+    #a = a.reset_index(drop = True)
+    a[a>=0]=0 # 上涨置0
+    a[a<0]=1  # 下跌置1
+    num_times=[(k,len(list(v))) for k,v in itertools.groupby(a[i])]
+    num=[num_times[m] for m in range(len(num_times)) if num_times[m][0]==1]
+    if len(num)>0:
+        dd= max(num[t][1] for t in range(len(num))) # 最大下跌持续时间
+        pos=[t for t in np.arange(len(num_times)) if num_times[t]==(1,dd)] # 记录全部最大下跌组的位置
+        dur_ret_list=[]
+        for l in pos:
+            cum=np.cumsum([num_times[m][1] for m in range(l)])
+            if len(cum)!=0:
+                starttime=a.index[cum[-1] - 1]
+                endtime=a.index[cum[-1]+dd - 1]
+            else:
+                "第一组即为最大下跌组"
+                if l!=0:
+                    print("###可能报错,请发送邮件至:wanggb@igwfmc.com")
+                    print(pos)
+                    print(l)
+                    print(num)
+                starttime=a.index[0] - 1
+                endtime=a.index[dd-1]  #修改于20181009
+            b1=fnv0[i].loc[endtime]
+            b2=fnv0[i].loc[starttime]
+            dur_ret=b1/b2-1 # 持续下跌收益率
+            dur_ret_list.append(dur_ret)
+        dur_ret=min(dur_ret_list)
+    else:
+        "没有月份下跌"
+        dd=0
+        dur_ret=np.nan
+    return dd,dur_ret
+" main function for drawdown"
+#用月度数据计算的最大回撤
+def drawdown(fund_data,drawdowndt,start,end):
+    ###获取年份
+    tmp = end - start
+    n=np.arange(1,int(tmp.days/365)+1) #生成y个
+    ColNames = ["过去%s年" % (i) for i in n]
+    ColNamesDrawback = [i + "最大回撤" for i in ColNames]
+    ###
+    fnv0=fund_data.loc[fund_data.index<=drawdowndt]
+    mon=fnv0.resample('BM').last()
+    drawback=pd.DataFrame(index=fnv0.columns,columns = ColNamesDrawback)   #最大回撤
+    drawdate=pd.DataFrame(index=fnv0.columns,columns = ColNames)   #最大回撤波谷日期
+    durtime=pd.DataFrame(index=fnv0.columns,columns = ColNames)    #回撤持续月度数
+    dur_ret=pd.DataFrame(index=fnv0.columns,columns = ColNames)    #连续下跌月度区间内的收益率
+    lowestdate=pd.DataFrame(index=fnv0.columns,columns = ColNames) #净值最低点
+    res_ret=pd.DataFrame(index=fnv0.columns,columns = ColNames)    #现在相对最低点已经恢复的收益率
+    for t in n:
+        print("###正在计算过去%s年的回撤指标" %(t))
+        if fnv0.index[-1]!=mon.index[-1]:
+            var=fnv0.index[-1-12*t]
+            fnv0=fnv0.drop(fnv0.index[-1])
+            var1=fnv0.index[-2-12*t]
+        else:
+            var=fnv0.index[-12*t]
+            var1=fnv0.index[-1-12*t]
+        mm=fnv0[fnv0.index>=var]
+        mm0=mm.copy()
+        mm=mm.reset_index(drop=True)
+        mm1=fnv0[fnv0.index>=var1]        
+        mm1=mm1.reset_index(drop=True)
+        mm2=mm1.pct_change()
+        mm2=mm2.drop(mm2.index[0])
+        for v in mm.columns:
+            tmax=0  #0-t时刻的最大净值，初始值为0
+            fmax=mm2[v].loc[1]  #最大回撤，初始值为第一天的涨跌幅
+            drec=0  #连续下跌月的收益率
+            re=0 #现在相对最低点已经恢复的收益率
+            ddate=mm0.index[0] #最大回撤的最低点对应的时间点
+            for i in range(1,len(mm)):
+                tmax=max(tmax,mm[v].loc[i])
+                if (mm[v].loc[i]/tmax-1)<fmax:
+                    fmax=mm[v].loc[i]/tmax-1
+                    ddate=mm0.index[i]
+            drawback['过去'+'%d' %t+'年最大回撤'].loc[v]=fmax
+            drawdate['过去'+'%d' %t+'年'].loc[v]=ddate
+            try:            
+                durt,drec=dur_cal(mm2,mm1,v)
+            except Exception as e:
+                print(v)
+                print(e)
+            durtime['过去'+'%d' %t+'年'].loc[v]=durt            
+            dur_ret['过去'+'%d' %t+'年'].loc[v]=drec            
+            ldate=mm0[v].idxmin(axis=0)
+            lowestdate['过去'+'%d' %t+'年'].loc[v]=ldate
+            re=(mm[v].loc[len(mm)-1])/min(mm[v])-1
+            res_ret['过去'+'%d' %t+'年'].loc[v]=re
+    for i in drawback.columns:
+        drawback[i] = drawback[i].astype(np.float)
+    for i in durtime.columns:
+        durtime[i] = durtime[i].astype(np.float)
+    for i in dur_ret.columns:
+        dur_ret[i] = dur_ret[i].astype(np.float)
+    for i in res_ret.columns:
+        res_ret[i] = res_ret[i].astype(np.float)
+    return drawback,drawdate,durtime,dur_ret,lowestdate,res_ret
+
+###用日度数据计算最大回撤
+def DrawDownD(fund_data,drawdowndt,start,end):
+    ###获取年份
+    tmp = end - start
+    n=np.arange(1,int(tmp.days/365)+1) #生成y个
+    ColNames = ["过去%s年" % (i) for i in n]
+    ###
+    fnv0=fund_data.loc[fund_data.index<=drawdowndt]
+    drawback=pd.DataFrame(index=fnv0.columns)   #最大回撤
+    for t in n:
+        print("###正在计算过去%s年的回撤指标" %(t))
+        TheLastDate = fnv0.index[-1]
+        TheBeginDate = datetime(TheLastDate.year - t,TheLastDate.month,TheLastDate.day)
+        TheBeginDate = fnv0.index[fnv0.index >= TheBeginDate].min()
+        mm=fnv0[fnv0.index>=TheBeginDate]
+        ResultTemp = mm.apply(lambda x:np.min(x/x.cummax() - 1),axis = 0)
+        ResultTemp = pd.DataFrame(ResultTemp,columns = [ColNames[t-1]])
+        drawback = pd.merge(drawback,ResultTemp,left_index = True,right_index = True)
+    return drawback
+
+'''
+calculaiton for sharpe ratio and information rate
+'''
+
+
+" sharpe ratio , input:ann_ret,rf,ann_vol,start,end,flag "
+" 注：flag=0，输出2年滚动；flag=1，输出3年滚动;flag = 2 输出一年滚动"
+def sharpe_ratio(ann_ret,rf,ann_vol,start,end,flag):
+    n=int(end.strftime('%Y'))-int(start.strftime('%Y'))
+    if len(ann_ret.columns)==len(ann_vol.columns):
+        ann_ret.columns = [np.arange(len(ann_vol.columns))]
+        ann_vol.columns = [np.arange(len(ann_vol.columns))]
+        sharpe=(ann_ret-rf)/ann_vol
+    else:
+        raise ValueError('数据出错')
+    if flag==0:  
+        n=np.arange(1,len(sharpe.columns)+1)
+        for i in n:
+            en=end-(i-1)*timedelta(days=365)
+            st=end-(i+1)*timedelta(days=365)
+            if st<start:
+                st=start
+            sharpe.rename(columns={i-1:st.strftime('%Y-%m-%d')+'到'+en.strftime('%Y-%m-%d')},inplace=True)
+    elif flag==1:
+        n=np.arange(1,len(sharpe.columns)+1)
+        for i in n:
+            en=end-(i-1)*timedelta(days=365)
+            st=end-(i+2)*timedelta(days=365)
+            if st<start:
+                st=start
+            sharpe.rename(columns={i-1:st.strftime('%Y-%m-%d')+'到'+en.strftime('%Y-%m-%d')},inplace=True)
+    elif flag==2:
+        n=np.arange(1,len(sharpe.columns)+1)
+        for i in n:
+            en=end-(i-1)*timedelta(days=365)
+            st=end-i*timedelta(days=365)
+            if st<start:
+                st=start
+            sharpe.rename(columns={i-1:st.strftime('%Y-%m-%d')+'到'+en.strftime('%Y-%m-%d')},inplace=True)
+    else:
+        raise ValueError('输入错误')
+    return sharpe
+
+"""
+" sharpe ratio , input:ann_ret,rf,ann_vol,start,end,flag "
+" 注：flag=0，输出2年滚动；flag=1，输出3年滚动"
+def sharpe_ratio(ann_ret,rf,ann_vol,start,end,flag):
+    n=int(end.strftime('%Y'))-int(start.strftime('%Y'))
+    if len(ann_ret.columns)==len(ann_vol.columns):
+        ann_ret.columns=[np.arange(len(ann_vol.columns))]
+        ann_vol.columns=[np.arange(len(ann_vol.columns))]
+        sharpe=(ann_ret-rf)/ann_vol
+    else:
+        raise ValueError('数据出错')
+    if flag==0:  
+        n=np.arange(1,len(sharpe.columns)+1)
+        for i in n:
+            en=end-(i-1)*timedelta(days=365)
+            st=end-(i+1)*timedelta(days=365)
+            if st<start:
+                st=start
+            sharpe.rename(columns={i-1:st.strftime('%Y-%m-%d')+'到'+en.strftime('%Y-%m-%d')},inplace=True)
+    elif flag==1:
+        n=np.arange(1,len(sharpe.columns)+1)
+        for i in n:
+            en=end-(i-1)*timedelta(days=365)
+            st=end-(i+2)*timedelta(days=365)
+            if st<start:
+                st=start
+            sharpe.rename(columns={i-1:st.strftime('%Y-%m-%d')+'到'+en.strftime('%Y-%m-%d')},inplace=True)
+    else:
+        raise ValueError('输入错误')
+    return sharpe
+"""
+
+" info ratio , input:ext,t_err,start,end,flag "
+" 注：flag=0，输出2年滚动；flag=1，输出3年滚动；flag=2,输出1年滚动"
+def info_rate(ext,t_err,start,end,flag):
+    n=int(end.strftime('%Y'))-int(start.strftime('%Y'))
+    if len(ext.columns)==len(t_err.columns):
+        ext.columns = [np.arange(len(ext.columns))]
+        t_err.columns = [np.arange(len(ext.columns))]
+        ir=ext/t_err
+    else:
+        raise ValueError('数据出错')
+    if flag==0:  
+        n=np.arange(1,len(ir.columns)+1)
+        for i in n:
+            en=end-(i-1)*timedelta(days=365)
+            st=end-(i+1)*timedelta(days=365)
+            if st<start:
+                st=start
+            ir.rename(columns={i-1:st.strftime('%Y-%m-%d')+'到'+en.strftime('%Y-%m-%d')},inplace=True)
+    elif flag==1:
+        n=np.arange(1,len(ir.columns)+1)
+        for i in n:
+            en=end-(i-1)*timedelta(days=365)
+            st=end-(i+2)*timedelta(days=365)
+            if st<start:
+                st=start
+            ir.rename(columns={i-1:st.strftime('%Y-%m-%d')+'到'+en.strftime('%Y-%m-%d')},inplace=True)
+    elif flag==2:
+        n=np.arange(1,len(ir.columns)+1)
+        for i in n:
+            en=end-(i-1)*timedelta(days=365)
+            st=end-i*timedelta(days=365)
+            if st<start:
+                st=start
+            ir.rename(columns={i-1:st.strftime('%Y-%m-%d')+'到'+en.strftime('%Y-%m-%d')},inplace=True)
+    else:
+        raise ValueError('输入错误')
+    return ir
+
+"""
+" info ratio , input:ext,t_err,start,end,flag "
+" 注：flag=0，输出2年滚动；flag=1，输出3年滚动"
+def info_rate(ext,t_err,start,end,flag):
+    n=int(end.strftime('%Y'))-int(start.strftime('%Y'))
+    if len(ext.columns)==len(t_err.columns):
+        ext.columns=[np.arange(len(ext.columns))]
+        t_err.columns=[np.arange(len(ext.columns))]
+        ir=ext/t_err
+    else:
+        raise ValueError('数据出错')
+    if flag==0:  
+        n=np.arange(1,len(ir.columns)+1)
+        for i in n:
+            en=end-(i-1)*timedelta(days=365)
+            st=end-(i+1)*timedelta(days=365)
+            if st<start:
+                st=start
+            ir.rename(columns={i-1:st.strftime('%Y-%m-%d')+'到'+en.strftime('%Y-%m-%d')},inplace=True)
+    elif flag==1:
+        n=np.arange(1,len(ir.columns)+1)
+        for i in n:
+            en=end-(i-1)*timedelta(days=365)
+            st=end-(i+2)*timedelta(days=365)
+            if st<start:
+                st=start
+            ir.rename(columns={i-1:st.strftime('%Y-%m-%d')+'到'+en.strftime('%Y-%m-%d')},inplace=True)
+    else:
+        raise ValueError('输入错误')
+    return ir
+"""
+
+'''
+calculaiton for positive&negetive analyzation
+'''
+
+" positive analysis , input:fnv,anamon,end,bscode "
+def pos_ana(fnv,anamon,end,basecode):
+    t=int(anamon)
+    mon=fnv.resample('BM').last()
+    nmean=pd.DataFrame(index=fnv.columns)
+    nmean=nmean.reset_index(drop=False)
+    le=pd.DataFrame(index=fnv.columns,columns=['基准大于0的月度数'])
+    mon1=pd.DataFrame(index=fnv.columns[0::],columns=['基准大于0的月度里，基金业绩大于0的月度数'])
+    mon2=pd.DataFrame(index=fnv.columns[0::],columns=['基准大于0的月度里，基金业绩大于基准业绩的月度数'])
+    if fnv.index[-1]!=mon.index[-1]:
+        var=fnv.index[(-1-t)]
+        fnv=fnv.drop(fnv.index[-1])
+    else:
+        var=fnv.index[(-t)]
+    mon3=fnv[fnv.index>=var]
+    mon4=mon3[mon3[basecode]>0]
+    le['基准大于0的月度数']=len(mon4)
+    nummean=mon4.mean()
+    nummean=pd.DataFrame(nummean.values,index=fnv.columns,columns=['基准大于0的月度,基金的平均收益率'])
+    nummean=nummean.reset_index(drop=False)
+    nmean=pd.merge(nmean,nummean,on=['index'],how='left')
+    nmean=nmean.set_index('index')    
+    for i in mon4.columns[0::]:
+        aa1=len(mon4[mon4[i]>0])
+        mon1.loc[i]=aa1
+        aa2=len(mon4[mon4[i]>mon4[basecode]])
+        mon2.loc[i]=aa2
+    for i in mon1.columns:
+        mon1[i] = mon1[i].astype(np.float)
+    for i in mon2.columns:
+        mon2[i] = mon2[i].astype(np.float)
+    return le,nmean,mon1,mon2
+
+" negative analysis , input:fnv,anamon,end,bscode  "
+def neg_ana(fnv,anamon,end,basecode):
+    t=int(anamon)
+    mon=fnv.resample('BM').last()
+    nmean=pd.DataFrame(index=fnv.columns)
+    nmean=nmean.reset_index(drop=False)
+    le=pd.DataFrame(index=fnv.columns,columns=['基准小于0的月度数'])
+    mon1=pd.DataFrame(index=fnv.columns[0::],columns=['基准小于0的月度里，基金业绩大于0的月度数'])
+    mon2=pd.DataFrame(index=fnv.columns[0::],columns=['基准小于0的月度里，基金业绩大于基准业绩的月度数'])
+    if fnv.index[-1]!=mon.index[-1]:
+        var=fnv.index[(-1-t)]
+        fnv=fnv.drop(fnv.index[-1])
+    else:
+        var=fnv.index[(-t)]
+    mon3=fnv[fnv.index>=var]
+    mon4=mon3[mon3[basecode]<0]
+    le['基准小于0的月度数']=len(mon4)
+    nummean=mon4.mean()
+    nummean=pd.DataFrame(nummean.values,index=fnv.columns,columns=['基准小于0的月度,基金的平均收益率'])
+    nummean=nummean.reset_index(drop=False)
+    nmean=pd.merge(nmean,nummean,on=['index'],how='left')
+    nmean=nmean.set_index('index')    
+    for i in mon4.columns[0::]:
+        aa1=len(mon4[mon4[i]>0])
+        mon1.loc[i]=aa1
+        aa2=len(mon4[mon4[i]>mon4[basecode]])
+        mon2.loc[i]=aa2
+    for i in mon1.columns:
+        mon1[i] = mon1[i].astype(np.float)
+    for i in mon2.columns:
+        mon2[i] = mon2[i].astype(np.float)
+    return le,nmean,mon1,mon2
+    
+'''
+calculaiton for special date
+'''
+" input: sp_date,nv2 "
+###计算特殊时期的收益年化收益
+def spe_cal_nh(sp_date,nv,TheLength):
+    spe_ret=pd.DataFrame(index=nv.columns,columns=sp_date.index)
+    for i in sp_date.index:
+        mon1=nv.loc[nv.index>=sp_date['spstart'].loc[i]]
+        mon2=mon1.loc[mon1.index<=sp_date['spend'].loc[i]]
+        mon2=mon2.T
+        mon2.columns=[np.arange(len(mon2.columns))]
+        mon2=mon2.T
+        spe_ret[i]=(mon2.iloc[len(mon2)-1]/mon2.iloc[0])**(TheLength/len(mon2.index))-1
+    spe_ret.columns = spe_ret.columns + '_年化收益'
+    return spe_ret
+
+###计算特殊时期的收益
+def spe_cal(sp_date,nv):
+    spe_ret=pd.DataFrame(index=nv.columns,columns=sp_date.index)
+    for i in sp_date.index:
+        mon1=nv.loc[nv.index>=sp_date['spstart'].loc[i]]
+        mon2=mon1.loc[mon1.index<=sp_date['spend'].loc[i]]
+        mon2=mon2.T
+        mon2.columns=[np.arange(len(mon2.columns))]
+        mon2=mon2.T
+        spe_ret[i]=(mon2.iloc[len(mon2)-1]/mon2.iloc[0])-1
+    spe_ret.columns = spe_ret.columns
+    return spe_ret
+
+###
+def IndexFundAnalysis(IndexFunds,FundNetValue,AIndexEODPrices,end):
+    ColNames = ["1年年化超额收益率","2年年化超额收益率","3年年化超额收益率","1年年化跟踪误差","2年年化跟踪误差","3年年化跟踪误差","管理费"]
+    result = pd.DataFrame(index = IndexFunds.基金代码,columns = ColNames)
+    ###计算超额收益
+    IndexFunds = IndexFunds.reset_index(drop = True)
+    for i in range(len(IndexFunds)):
+        FundCode = IndexFunds.基金代码.tolist()[i]
+        IndexCode = IndexFunds.跟踪指数.tolist()[i]
+        result.loc[FundCode,"管理费"] = IndexFunds.管理费率.tolist()[i]
+        print(i,FundCode,IndexCode)
+        dat1 = FundNetValue[FundCode]
+        dat1 = pd.DataFrame(dat1)
+        dat1.columns = ["NetValue"]
+        dat2 = AIndexEODPrices[IndexCode]
+        dat2 = pd.DataFrame(dat2)
+        dat2.columns = ["BenchMark"]        
+        dat = pd.merge(dat1,dat2,left_index = True,right_index = True)
+        dat = dat.fillna(method="pad")
+        dat = dat.dropna()
+        dat = dat[dat.index <= end]
+        Days = dat.shape[0]
+        if Days>= 245*3:
+            #3年指标
+            Years = 3
+            tempdata = dat.tail(245*Years)
+            tempdata1 = (tempdata.iloc[-1,:]/tempdata.iloc[0,:])**(1/Years)-1
+            tempdata2 = tempdata.pct_change()
+            tempdata2 = tempdata2.dropna()
+            tempdata2["PianLi"] = tempdata2.NetValue - tempdata2.BenchMark
+            result.loc[FundCode,"3年年化超额收益率"] = tempdata1.NetValue - tempdata1.BenchMark
+            result.loc[FundCode,"3年年化跟踪误差"] = tempdata2.PianLi.std() * np.sqrt(245)
+            #2年指标
+            Years = 2
+            tempdata = dat.tail(245*Years)
+            tempdata1 = (tempdata.iloc[-1,:]/tempdata.iloc[0,:])**(1/Years)-1
+            tempdata2 = tempdata.pct_change()
+            tempdata2 = tempdata2.dropna()
+            tempdata2["PianLi"] = tempdata2.NetValue - tempdata2.BenchMark
+            result.loc[FundCode,"2年年化超额收益率"] = tempdata1.NetValue - tempdata1.BenchMark
+            result.loc[FundCode,"2年年化跟踪误差"] = tempdata2.PianLi.std() * np.sqrt(245)
+            #1年指标
+            Years = 1
+            tempdata = dat.tail(245*Years)
+            tempdata1 = (tempdata.iloc[-1,:]/tempdata.iloc[0,:])**(1/Years)-1
+            tempdata2 = tempdata.pct_change()
+            tempdata2 = tempdata2.dropna()
+            tempdata2["PianLi"] = tempdata2.NetValue - tempdata2.BenchMark
+            result.loc[FundCode,"1年年化超额收益率"] = tempdata1.NetValue - tempdata1.BenchMark
+            result.loc[FundCode,"1年年化跟踪误差"] = tempdata2.PianLi.std() * np.sqrt(245)
+        elif Days < 245*3 and Days>= 245*2:
+            #2年指标
+            Years = 2
+            tempdata = dat.tail(245*Years)
+            tempdata1 = (tempdata.iloc[-1,:]/tempdata.iloc[0,:])**(1/Years)-1
+            tempdata2 = tempdata.pct_change()
+            tempdata2 = tempdata2.dropna()
+            tempdata2["PianLi"] = tempdata2.NetValue - tempdata2.BenchMark
+            result.loc[FundCode,"2年年化超额收益率"] = tempdata1.NetValue - tempdata1.BenchMark
+            result.loc[FundCode,"2年年化跟踪误差"] = tempdata2.PianLi.std() * np.sqrt(245)
+            #1年指标
+            Years = 1
+            tempdata = dat.tail(245*Years)
+            tempdata1 = (tempdata.iloc[-1,:]/tempdata.iloc[0,:])**(1/Years)-1
+            tempdata2 = tempdata.pct_change()
+            tempdata2 = tempdata2.dropna()
+            tempdata2["PianLi"] = tempdata2.NetValue - tempdata2.BenchMark
+            result.loc[FundCode,"1年年化超额收益率"] = tempdata1.NetValue - tempdata1.BenchMark
+            result.loc[FundCode,"1年年化跟踪误差"] = tempdata2.PianLi.std() * np.sqrt(245)
+        elif Days < 245*2 and Days>= 245*1:
+            #1年指标
+            Years = 1
+            tempdata = dat.tail(245*Years)
+            tempdata1 = (tempdata.iloc[-1,:]/tempdata.iloc[0,:])**(1/Years)-1
+            tempdata2 = tempdata.pct_change()
+            tempdata2 = tempdata2.dropna()
+            tempdata2["PianLi"] = tempdata2.NetValue - tempdata2.BenchMark
+            result.loc[FundCode,"1年年化超额收益率"] = tempdata1.NetValue - tempdata1.BenchMark
+            result.loc[FundCode,"1年年化跟踪误差"] = tempdata2.PianLi.std() * np.sqrt(245)
+        else:
+            print("考察期不足1年")
+    return(result)
+
+
+"""
+#%%指数行情数据
+sql = "select S_INFO_WINDCODE as IndexCode,TRADE_DT as TradingDay,S_DQ_CLOSE as Close from AIndexEODPrices"
+AIndexEODPrices = getDataWind(sql)
+AIndexEODPrices = AIndexEODPrices.sort_values(["INDEXCODE","TRADINGDAY"])
+AIndexEODPrices["CLOSE"] = AIndexEODPrices.CLOSE.astype(float)
+data = pd.pivot_table(AIndexEODPrices,values = "CLOSE",index = "TRADINGDAY",columns = "INDEXCODE")
+data.to_pickle("AIndexEODPrices.pkl")
+"""
+
+
+
+
+
+
+
